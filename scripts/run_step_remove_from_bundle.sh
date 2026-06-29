@@ -23,6 +23,7 @@ JIRA_ID="${JIRA_URL%/}"; JIRA_ID="${JIRA_ID##*/}"
 WORKDIR="${WORKDIR:-$(pwd)/${JIRA_ID}}"
 PIPELINE_STATE="${PIPELINE_STATE:-${WORKDIR}/pipeline_state.json}"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPTS_DIR/dry_run_helpers.sh"
 
 [[ ! -f "$PIPELINE_STATE" ]] && {
   echo "ERROR: pipeline_state.json not found at $PIPELINE_STATE" >&2; exit 1
@@ -115,6 +116,17 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   fi
 fi
 
+# RHOAI: also clean up bundle/Dockerfile ARG/label lines for this component
+if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
+  BUNDLE_DOCKERFILE="$CLONE_DIR/bundle/Dockerfile"
+  if [[ -f "$BUNDLE_DOCKERFILE" ]] && grep -qF "$COMPONENT_NAME" "$BUNDLE_DOCKERFILE" 2>/dev/null; then
+    sed -i '' "/${COMPONENT_NAME}/d" "$BUNDLE_DOCKERFILE"
+    FILES_CHANGED="$FILES_CHANGED bundle/Dockerfile"
+    CHANGES_MADE=true
+    echo "Removed Dockerfile lines referencing '${COMPONENT_NAME}'"
+  fi
+fi
+
 if [[ "$CHANGES_MADE" == "false" ]]; then
   echo "Component '${COMPONENT_NAME}' not found in bundle — already removed."
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
@@ -123,6 +135,17 @@ if [[ "$CHANGES_MADE" == "false" ]]; then
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
     --state "$PIPELINE_STATE" --step remove_bundle --status done
   exit 2
+fi
+
+if is_dry_run; then
+  cd "$CLONE_DIR"
+  git add -A
+  git commit -m "dry-run" --allow-empty 2>/dev/null || true
+  dry_run_show_diff "$CLONE_DIR"
+  dry_run_skip_pr "GitHub PR" "Remove ${COMPONENT_NAME} from bundle relatedImages (offboarding)" "$SRC_BRANCH"
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step remove_bundle --status dry_run
+  exit 0
 fi
 
 bash "$SCRIPTS_DIR/git_commit_push.sh" \

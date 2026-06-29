@@ -50,20 +50,26 @@ STEPS_RHOAI = [
 
 OFFBOARD_STEPS_ODH = [
     ("validate",               "Validate Jira",                         None),
-    ("remove_krd",             "Remove from Konflux release data",      "mr_url"),
-    ("remove_okc",             "Remove push PipelineRun",               "pr_url"),
-    ("remove_bundle",          "Remove from bundle",                    "pr_url"),
     ("remove_operator",        "Remove from operator manifests",        "pr_url"),
+    ("remove_bundle",          "Remove from bundle",                    "pr_url"),
+    ("remove_okc",             "Remove push PipelineRun",               "pr_url"),
+    ("remove_pull_pipelines",  "Remove pull PipelineRun",               "pr_url"),
+    ("remove_krd",             "Remove from Konflux release data",      "mr_url"),
+    ("remove_quay",            "Remove Quay repo config ⚠️",            "mr_url"),
 ]
 
 OFFBOARD_STEPS_RHOAI = [
     ("validate",               "Validate Jira",                         None),
-    ("remove_krd",             "Remove from Konflux release data",      "mr_url"),
+    ("remove_operator",        "Remove from operator manifests",        "pr_url"),
+    ("remove_bundle",          "Remove from bundle & build-config",     "pr_url"),
+    ("remove_auto_merge",      "Remove auto-merge config ⚠️",           "pr_url"),
+    ("remove_renovate",        "Remove Renovate config ⚠️",             "pr_url"),
     ("remove_okc",             "Remove push PipelineRun",               "pr_url"),
     ("remove_pull_pipelines",  "Remove pull PipelineRun",               "pr_url"),
-    ("remove_bundle",          "Remove from bundle & build-config",     "pr_url"),
-    ("remove_operator",        "Remove from operator manifests",        "pr_url"),
-    ("remove_product_listing", "Remove from RHOAI product listing",     "mr_url"),
+    ("remove_krd",             "Remove from Konflux release data",      "mr_url"),
+    ("remove_product_listing", "Remove from RHOAI product listing ⚠️",  "mr_url"),
+    ("remove_delivery_repo",   "Remove RHOAI delivery repo ⚠️",         "mr_url"),
+    ("remove_quay",            "Remove Quay repo config ⚠️",            "mr_url"),
 ]
 
 # Which steps are "blocking" (i.e. have a PR/MR that must merge to progress).
@@ -76,7 +82,12 @@ _DEPENDENCY_RHOAI: dict[str, str] = {
     "delivery_repo": "product_listing",
     "renovate":      "renovate_sync",
 }
-_OFFBOARD_DEPENDENCY: dict[str, str] = {}
+_OFFBOARD_DEPENDENCY: dict[str, str] = {
+    "remove_operator": "remove_okc + remove_pull_pipelines (when remove_bundle also done)",
+    "remove_bundle":   "remove_okc + remove_pull_pipelines (when remove_operator also done)",
+    "remove_okc":      "remove_krd (when remove_pull_pipelines also done)",
+    "remove_pull_pipelines": "remove_krd (when remove_okc also done)",
+}
 
 
 def _steps_for(product_context: str, pipeline_type: str) -> list[tuple]:

@@ -727,6 +727,83 @@ def cmd_remove_build_config_component(args):
     print(f"Removed '{args.key}' from repo_mappings in {path}")
 
 
+def cmd_remove_items_array_entry(args):
+    """Remove an entry from a top-level 'items' array by name.
+
+    Exit 0 if removed, exit 2 if not found (idempotent).
+    """
+    path = Path(args.file)
+    yaml = _make_yaml(path)
+    data = _load(path, yaml)
+
+    items = data.get("items")
+    if not isinstance(items, list):
+        print(f"No 'items' array in {path} — nothing to remove.")
+        sys.exit(2)
+
+    to_remove = [
+        i for i, entry in enumerate(items)
+        if isinstance(entry, dict) and entry.get("name") == args.name
+    ]
+
+    if not to_remove:
+        print(f"Entry with name='{args.name}' not found in 'items' — already removed.")
+        sys.exit(2)
+
+    for i in reversed(to_remove):
+        del items[i]
+
+    _save(path, data, yaml)
+    print(f"Removed entry '{args.name}' from 'items' in {path}")
+
+
+def cmd_remove_renovate_repo(args):
+    """Remove a repo from the sync-repositories array in a renovate distribution group.
+
+    Matches the first distribution group whose 'renovate-config' matches --renovate-config,
+    then removes the entry from 'sync-repositories' where name == --name.
+    Exit 0 if removed, exit 2 if not found (idempotent).
+    """
+    path = Path(args.file)
+    yaml = _make_yaml(path)
+    data = _load(path, yaml)
+
+    distributions = data.get("distributions")
+    if not isinstance(distributions, list):
+        print(f"No 'distributions' array in {path} — nothing to remove.")
+        sys.exit(2)
+
+    target_dist = None
+    for dist in distributions:
+        if isinstance(dist, dict) and dist.get("renovate-config") == args.renovate_config:
+            target_dist = dist
+            break
+
+    if target_dist is None:
+        print(f"Distribution with renovate-config='{args.renovate_config}' not found — nothing to remove.")
+        sys.exit(2)
+
+    repos = target_dist.get("sync-repositories")
+    if not isinstance(repos, list):
+        print(f"No 'sync-repositories' in matching distribution — nothing to remove.")
+        sys.exit(2)
+
+    to_remove = [
+        i for i, entry in enumerate(repos)
+        if isinstance(entry, dict) and entry.get("name") == args.name
+    ]
+
+    if not to_remove:
+        print(f"Repo '{args.name}' not found in sync-repositories — already removed.")
+        sys.exit(2)
+
+    for i in reversed(to_remove):
+        del repos[i]
+
+    _save(path, data, yaml)
+    print(f"Removed '{args.name}' from sync-repositories in {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="YAML editing utility")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -843,6 +920,17 @@ def main():
     r7.add_argument("file")
     r7.add_argument("--key", required=True, help="Exact repo_mappings key to remove")
 
+    # remove-items-array-entry
+    r8 = sub.add_parser("remove-items-array-entry")
+    r8.add_argument("file")
+    r8.add_argument("--name", required=True)
+
+    # remove-renovate-repo
+    r9 = sub.add_parser("remove-renovate-repo")
+    r9.add_argument("file")
+    r9.add_argument("--renovate-config", required=True)
+    r9.add_argument("--name", required=True)
+
     args = parser.parse_args()
 
     dispatch = {
@@ -863,6 +951,8 @@ def main():
         "remove-map-key":            cmd_remove_map_key,
         "append-build-config-component": cmd_append_build_config_component,
         "remove-build-config-component": cmd_remove_build_config_component,
+        "remove-items-array-entry":      cmd_remove_items_array_entry,
+        "remove-renovate-repo":          cmd_remove_renovate_repo,
     }
     dispatch[args.command](args)
 

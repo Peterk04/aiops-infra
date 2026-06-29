@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Offboarding: remove component from RHOAI product listing in pyxis-repo-configs (RHOAI only).
+# Offboarding: remove component's delivery repository entry from pyxis-repo-configs (RHOAI only).
 #
-# Removes the component's registry path from product-listings/rhoai/rhoai.yaml
-# and raises a GitLab MR.
+# Removes the component's repository block matching rhoai/${COMPONENT_NAME}-rhel9
+# from products/rhoai/rhoai.yaml and raises a GitLab MR.
 #
 # Exit codes:
 #   0  MR raised — prints MR_URL=<url>; writes pipeline_state.json
@@ -33,7 +33,7 @@ source "$SCRIPTS_DIR/dry_run_helpers.sh"
   echo "ERROR: pipeline_state.json not found at $PIPELINE_STATE" >&2; exit 1
 }
 
-EXISTING_URL=$(jq -r '.steps.remove_product_listing.mr_url // ""' "$PIPELINE_STATE")
+EXISTING_URL=$(jq -r '.steps.remove_delivery_repo.mr_url // ""' "$PIPELINE_STATE")
 if [[ -n "$EXISTING_URL" ]]; then
   echo "MR already recorded in state: $EXISTING_URL"
   echo "MR_URL=$EXISTING_URL"
@@ -48,43 +48,39 @@ COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}')
   echo "ERROR: component_name missing from YAML." >&2; exit 1
 }
 
-# Product listing entries use the rhoai registry path
-PRODUCT_LISTING_ENTRY="registry.access.redhat.com/rhoai/${COMPONENT_NAME}-rhel9"
-# Also check for beta variant
-PRODUCT_LISTING_ENTRY_BETA="registry.access.redhat.com/rhoai-beta/${COMPONENT_NAME}-rhel9"
+# Delivery repo entries use the rhoai repository name
+DELIVERY_REPO_NAME="rhoai/${COMPONENT_NAME}-rhel9"
 
 PYXIS_URL="${PYXIS_REPO_CONFIGS_REPO_URL:-https://gitlab.cee.redhat.com/releng/pyxis-repo-configs.git}"
 PYXIS_PATH=$(echo "$PYXIS_URL" | sed 's|https://gitlab.cee.redhat.com/||;s|\.git$||')
 PYXIS_PATH_ENCODED=$(echo "$PYXIS_PATH" | sed 's|/|%2F|g')
 
-echo "COMPONENT_NAME        : $COMPONENT_NAME"
-echo "PRODUCT_LISTING_ENTRY : $PRODUCT_LISTING_ENTRY"
-echo "PYXIS_URL             : $PYXIS_URL"
+echo "COMPONENT_NAME    : $COMPONENT_NAME"
+echo "DELIVERY_REPO_NAME: $DELIVERY_REPO_NAME"
+echo "PYXIS_URL         : $PYXIS_URL"
 
-# Fast-path: check if entry exists
+# Fast-path: check if entry exists via GitLab API before cloning
 RHOAI_YAML_TMPFILE=$(mktemp)
 HTTP_STATUS=$(curl -sk -w "%{http_code}" \
   -H "Authorization: Bearer $GITLAB_TOKEN" \
-  "https://gitlab.cee.redhat.com/api/v4/projects/${PYXIS_PATH_ENCODED}/repository/files/product-listings%2Frhoai%2Frhoai.yaml/raw?ref=main" \
+  "https://gitlab.cee.redhat.com/api/v4/projects/${PYXIS_PATH_ENCODED}/repository/files/products%2Frhoai%2Frhoai.yaml/raw?ref=main" \
   -o "$RHOAI_YAML_TMPFILE" 2>/dev/null || echo "000")
 
-ENTRY_TO_REMOVE=""
+ENTRY_EXISTS=false
 if [[ "$HTTP_STATUS" == "200" ]]; then
-  if grep -qF "$PRODUCT_LISTING_ENTRY" "$RHOAI_YAML_TMPFILE"; then
-    ENTRY_TO_REMOVE="$PRODUCT_LISTING_ENTRY"
-  elif grep -qF "$PRODUCT_LISTING_ENTRY_BETA" "$RHOAI_YAML_TMPFILE"; then
-    ENTRY_TO_REMOVE="$PRODUCT_LISTING_ENTRY_BETA"
+  if grep -qF "$DELIVERY_REPO_NAME" "$RHOAI_YAML_TMPFILE"; then
+    ENTRY_EXISTS=true
   fi
 fi
 rm -f "$RHOAI_YAML_TMPFILE"
 
-if [[ -z "$ENTRY_TO_REMOVE" ]]; then
-  echo "Product listing entry for '${COMPONENT_NAME}' not found in pyxis-repo-configs — already removed."
+if [[ "$ENTRY_EXISTS" == "false" ]]; then
+  echo "Delivery repo entry for '${COMPONENT_NAME}' not found in pyxis-repo-configs — already removed."
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-    --add-label "offboard-product-listing-done" \
-    --comment "Product listing entry for '${COMPONENT_NAME}' already absent from pyxis-repo-configs. No action needed." || true
+    --add-label "offboard-delivery-repo-done" \
+    --comment "Delivery repo entry for '${COMPONENT_NAME}' already absent from pyxis-repo-configs. No action needed." || true
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
-    --state "$PIPELINE_STATE" --step remove_product_listing --status done
+    --state "$PIPELINE_STATE" --step remove_delivery_repo --status done
   exit 2
 fi
 
@@ -94,44 +90,53 @@ PLAYPEN_OUTPUT=$(GITLAB_SSL_VERIFY=false bash "$SCRIPTS_DIR/setup_gitlab_playpen
   --src-url  "$PYXIS_URL" \
   --dest-url "$PYXIS_URL" \
   --src-branch main \
-  --dest-branch "${JIRA_ID}-offboard" \
-  --sparse-files "product-listings/rhoai/rhoai.yaml") || {
+  --dest-branch "${JIRA_ID}-offboard-delivery-repo" \
+  --sparse-files "products/rhoai/rhoai.yaml") || {
   echo "ERROR: Playpen setup for pyxis-repo-configs failed. Check VPN." >&2; exit 1
 }
 CLONE_DIR=$(echo "$PLAYPEN_OUTPUT" | head -1)
 DEST_BRANCH=$(echo "$PLAYPEN_OUTPUT" | tail -1)
 
-RHOAI_YAML="$CLONE_DIR/product-listings/rhoai/rhoai.yaml"
+RHOAI_YAML="$CLONE_DIR/products/rhoai/rhoai.yaml"
 [[ ! -f "$RHOAI_YAML" ]] && {
-  echo "ERROR: product-listings/rhoai/rhoai.yaml not found." >&2; exit 1
+  echo "ERROR: products/rhoai/rhoai.yaml not found." >&2; exit 1
 }
 
 # Remove entry
-uv run --script "$SCRIPTS_DIR/edit_yaml.py" remove-list-item \
-  "$RHOAI_YAML" \
-  --list-key "repositories" \
-  --value "$ENTRY_TO_REMOVE" || {
-  echo "ERROR: Could not remove entry from product-listings/rhoai/rhoai.yaml." >&2; exit 1
+REMOVE_RESULT=$(uv run --script "$SCRIPTS_DIR/remove_delivery_repo_entry.py" \
+  --yaml-file "$RHOAI_YAML" \
+  --repository-name "$DELIVERY_REPO_NAME") || {
+  echo "ERROR: Could not remove entry from products/rhoai/rhoai.yaml." >&2; exit 1
 }
+
+if [[ "$REMOVE_RESULT" == "not-found" ]]; then
+  echo "Delivery repo entry for '${COMPONENT_NAME}' not found after clone — already removed."
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --add-label "offboard-delivery-repo-done" \
+    --comment "Delivery repo entry for '${COMPONENT_NAME}' already absent from products/rhoai/rhoai.yaml. No action needed." || true
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step remove_delivery_repo --status done
+  exit 2
+fi
 
 if is_dry_run; then
   cd "$CLONE_DIR"
   git add -A
   git commit -m "dry-run" --allow-empty 2>/dev/null || true
   dry_run_show_diff "$CLONE_DIR"
-  dry_run_skip_pr "GitLab MR" "Remove ${COMPONENT_NAME} from RHOAI product listing (offboarding)" "main"
+  dry_run_skip_pr "GitLab MR" "Remove ${COMPONENT_NAME} delivery repo entry (offboarding)" "main"
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
-    --state "$PIPELINE_STATE" --step remove_product_listing --status dry_run
+    --state "$PIPELINE_STATE" --step remove_delivery_repo --status dry_run
   exit 0
 fi
 
 bash "$SCRIPTS_DIR/git_commit_push.sh" \
   --clone-dir "$CLONE_DIR" \
-  --files     "product-listings/rhoai/rhoai.yaml" \
-  --message   "Remove ${COMPONENT_NAME} from RHOAI product listing (offboarding)
+  --files     "products/rhoai/rhoai.yaml" \
+  --message   "Remove ${COMPONENT_NAME} delivery repo entry (offboarding)
 
-Removes ${ENTRY_TO_REMOVE} from the
-repositories list in product-listings/rhoai/rhoai.yaml.
+Removes ${DELIVERY_REPO_NAME} repository block from
+products/rhoai/rhoai.yaml.
 
 Related: ${JIRA_ID}" \
   --branch "$DEST_BRANCH"
@@ -143,8 +148,8 @@ for attempt in 1 2 3; do
     --src-branch  "$DEST_BRANCH" \
     --dest-url    "$PYXIS_URL" \
     --dest-branch main \
-    --title       "Remove ${COMPONENT_NAME} from RHOAI product listing (offboarding)" \
-    --description "Removes \`${ENTRY_TO_REMOVE}\` from \`product-listings/rhoai/rhoai.yaml\`.
+    --title       "Remove ${COMPONENT_NAME} delivery repo entry (offboarding)" \
+    --description "Removes \`${DELIVERY_REPO_NAME}\` repository block from \`products/rhoai/rhoai.yaml\`.
 
 Component: ${COMPONENT_NAME}
 Jira: ${JIRA_URL}" 2>/dev/null) && break
@@ -155,14 +160,14 @@ Jira: ${JIRA_URL}" 2>/dev/null) && break
 done
 
 uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --add-label "offboard-product-listing-mr-raised" \
-  --comment "[step:remove_product_listing] GitLab MR raised to remove '${COMPONENT_NAME}' from RHOAI product listing.
+  --add-label "offboard-delivery-repo-mr-raised" \
+  --comment "[step:remove_delivery_repo] GitLab MR raised to remove '${COMPONENT_NAME}' delivery repo entry.
 
 MR URL: ${MR_URL}
-Entry: ${ENTRY_TO_REMOVE}" || true
+Repository: ${DELIVERY_REPO_NAME}" || true
 
 bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
-  --state "$PIPELINE_STATE" --step remove_product_listing \
+  --state "$PIPELINE_STATE" --step remove_delivery_repo \
   --status mr_raised --url "$MR_URL" --url-field mr_url
 
 echo "MR_URL=${MR_URL}"

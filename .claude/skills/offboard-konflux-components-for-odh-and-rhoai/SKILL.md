@@ -10,28 +10,48 @@ user-invocable: true
 
 # Offboard Konflux Components for ODH and RHOAI
 
-Orchestrates the complete component offboarding pipeline (idempotent re-run model):
+Orchestrates the complete component offboarding pipeline (idempotent re-run model).
+Order is the reverse of onboarding — downstream consumers are removed first:
 
-1. `validate-component-offboarding-jira` — fetch + validate Jira YAML
-2. `remove-from-krd` — GitLab MR to konflux-release-data (remove Component from PDS YAML, RPA files, automation)
-3. `remove-from-okc` — GitHub PR to remove push PipelineRun from Konflux Central
-4. `remove-pull-pipelines` — GitHub PR to remove pull-request PipelineRun **(RHOAI only)**
-5. `remove-from-bundle` — GitHub PR to remove relatedImages + build-config entries
-6. `remove-from-operator` — GitHub PR to remove operator manifests **(if is_operator=true)**
-7. `remove-product-listing` — GitLab MR to remove from pyxis-repo-configs product listing **(RHOAI only)**
+**Phase 1** (parallel, no dependencies):
+1. `remove-from-operator` — GitHub PR to remove from operator manifests + nudging **(if is_operator=true)**
+2. `remove-from-bundle` — GitHub PR to remove relatedImages, build-config, Dockerfile entries
+3. `remove-auto-merge` — GitHub PR to remove auto-merge config ⚠️ **(RHOAI, guarded)**
+4. `remove-renovate` — GitHub PR to remove Renovate config ⚠️ **(RHOAI, guarded)**
 
-**Key difference from onboarding:** All offboarding steps are independent — no `depends_on`
-chains. A single run can raise all PRs/MRs simultaneously.
+**Phase 2** (after Phase 1 operator + bundle merge):
+5. `remove-from-okc` — GitHub PR to remove push PipelineRun from Konflux Central
+6. `remove-pull-pipelines` — GitHub PR to remove pull-request PipelineRun + sync workflow entry **(RHOAI only)**
+
+**Phase 3** (after Phase 2 merges):
+7. `remove-from-krd` — GitLab MR to konflux-release-data (PDS, RPAs, automation)
+
+**Phase 4** (after Phase 3, guarded — **NOT RECOMMENDED** in most cases):
+8. `remove-product-listing` — GitLab MR to remove from pyxis product listing ⚠️
+9. `remove-delivery-repo` — GitLab MR to remove delivery repo entry ⚠️
+10. `remove-quay` — GitLab MR to remove Quay repo config ⚠️
+
+> **⚠️ Guarded steps** are skipped by default (`component_exists_in_older_versions=true`).
+> These remove shared infrastructure used across all supported RHOAI versions.
+> Removing them will break image delivery, dependency updates, or SHA bumps for
+> any older version that still uses this component. Only enable when you are certain
+> the component is not needed by any currently supported version.
 
 **Re-run model:** invoke this skill any number of times for the same Jira URL.
 Each run checks Jira labels and PR/MR API status to determine what's already done,
-executes pending steps, and posts a summary of status changes only.
+executes newly-unblocked steps, and posts a summary of status changes only.
 
 ## Usage
 
 ```
 /offboard-konflux-components-for-odh-and-rhoai <jira-url>
+/offboard-konflux-components-for-odh-and-rhoai <jira-url> --dry-run
 ```
+
+**Dry run mode:** Pass `--dry-run` to run the entire pipeline without pushing branches,
+raising PRs/MRs, or updating Jira. Each step still clones repos and makes edits locally,
+then prints the diff of what would be changed. Use this to validate the pipeline against
+any component — even one you don't actually want to offboard.
 
 ## Prerequisites
 
@@ -63,15 +83,29 @@ echo "SCRIPTS_DIR: $SCRIPTS_DIR"
 
 ## Step 0: Parse Inputs
 
+Parse the Jira URL and optional `--dry-run` flag from the arguments.
+
 ```bash
-eval "$(bash "$SCRIPTS_DIR/parse_jira_url.sh" "${1:-}")"
+DRY_RUN="false"
+ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--dry-run" ]]; then
+    DRY_RUN="true"
+  else
+    ARGS+=("$arg")
+  fi
+done
+export DRY_RUN
+
+eval "$(bash "$SCRIPTS_DIR/parse_jira_url.sh" "${ARGS[0]:-}")"
 [[ -z "$JIRA_URL" ]] && {
   echo "ERROR: Jira URL is required."
-  echo "  Usage: /offboard-konflux-components-for-odh-and-rhoai <jira-url>"
+  echo "  Usage: /offboard-konflux-components-for-odh-and-rhoai <jira-url> [--dry-run]"
   exit 1
 }
 echo "Jira ID  : $JIRA_ID"
 echo "Jira URL : $JIRA_URL"
+[[ "$DRY_RUN" == "true" ]] && echo "Mode     : DRY RUN (no push, no PRs, no Jira updates)"
 ```
 
 ---
@@ -138,15 +172,25 @@ eval "$_COMP_VARS"
 # Sets: COMPONENT_NAME IS_OPERATOR REPO_URL PRODUCT_CONTEXT QUAY_ORG
 ```
 
-After parsing, update the state for product-context-specific skip logic:
+After parsing, ask about older versions if not yet set, then update state:
 
 ```bash
+COMP_EXISTS=$(jq -r '.component_exists_in_older_versions // ""' "$PIPELINE_STATE")
+if [[ -z "$COMP_EXISTS" || "$COMP_EXISTS" == "null" ]]; then
+  echo "Does this component exist in older RHOAI versions that are still releasing?"
+  echo "  Default: true (recommended). Shared infrastructure will NOT be removed."
+  echo "  Only answer 'false' if no supported version still uses this component."
+  read -r -p "Component exists in older versions? (true/false) [true]: " COMP_EXISTS
+  COMP_EXISTS="${COMP_EXISTS:-true}"
+fi
+
 bash "$SCRIPTS_DIR/init_offboarding_pipeline.sh" \
   --jira-url         "$JIRA_URL" \
   --workdir-override "$WORKDIR" \
   --product-context  "$PRODUCT_CONTEXT" \
   --component-name   "$COMPONENT_NAME" \
   --is-operator      "$IS_OPERATOR" \
+  --component-exists-in-older-versions "$COMP_EXISTS" \
   > /dev/null
 ```
 
@@ -165,9 +209,10 @@ NEWLY_MERGED=$(bash "$SCRIPTS_DIR/check_pr_mr_status.sh" \
   --scripts-dir "$SCRIPTS_DIR")
 ```
 
-For each newly merged step, add its `label_done` Jira label:
+For each newly merged step, add its `label_done` Jira label (**skip in dry-run**):
 
 ```bash
+[[ "$DRY_RUN" == "true" ]] && NEWLY_MERGED=""
 for MERGED_KEY in $NEWLY_MERGED; do
   DONE_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_done // ""' "$PIPELINE_STATE")
   RAISED_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_raised // ""' "$PIPELINE_STATE")
@@ -186,8 +231,8 @@ done
 ## Step 6: Compute Unblocked Steps
 
 A step is **executable** if its `status` is `"pending"` and all `depends_on` items are
-`"merged"` or `"done"`. For offboarding, all steps have empty `depends_on`, so all
-pending steps are immediately executable.
+`"merged"`, `"done"`, or `"skipped"`. Steps with no dependencies (Phase 1) are
+immediately executable. Phases 2–4 wait for their dependencies.
 
 ```bash
 UNBLOCKED_STEPS=$(jq -r '
@@ -197,6 +242,7 @@ UNBLOCKED_STEPS=$(jq -r '
   select(
     .value.depends_on | all(. as $dep |
       $steps[$dep].status == "merged" or $steps[$dep].status == "done"
+      or $steps[$dep].status == "skipped"
     )
   ) | .key
 ' "$PIPELINE_STATE")
@@ -208,7 +254,9 @@ UNBLOCKED_STEPS=$(jq -r '
 
 For each step in `UNBLOCKED_STEPS`, call the corresponding wrapper script.
 
-Track whether any PR/MR was raised this run:
+Track whether any PR/MR was raised this run. `DRY_RUN` is already exported from
+Step 0 and inherited by all wrapper scripts.
+
 ```bash
 NEW_PRS_RAISED="false"
 ```
@@ -280,14 +328,81 @@ EXIT_CODE=$?
 - Exit 2: skipped (is_operator=false) or already removed. Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 7f: remove-product-listing (step key: `remove_product_listing`, RHOAI only)
+### Step 7f: remove-product-listing (step key: `remove_product_listing`, RHOAI only, guarded)
+
+> **NOT RECOMMENDED.** Shared across all supported versions. Skipped by default.
+> **VPN must be active.**
 
 **Execute if** `remove_product_listing` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-> **VPN must be active.**
-
 ```bash
 OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_product_listing.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: MR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7g: remove-auto-merge (step key: `remove_auto_merge`, RHOAI only, guarded)
+
+> **NOT RECOMMENDED.** Older version branches may still need SHA bumps via auto-merge.
+> Skipped by default.
+
+**Execute if** `remove_auto_merge` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_auto_merge.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7h: remove-renovate (step key: `remove_renovate`, RHOAI only, guarded)
+
+> **NOT RECOMMENDED.** Older version branches may still need dependency updates via Renovate.
+> Skipped by default.
+
+**Execute if** `remove_renovate` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_renovate.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7i: remove-delivery-repo (step key: `remove_delivery_repo`, RHOAI only, guarded)
+
+> **NOT RECOMMENDED.** The delivery repo is the pipeline through which images flow to
+> Red Hat registries, shared across versions. Skipped by default.
+> **VPN must be active.**
+
+**Execute if** `remove_delivery_repo` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_delivery_repo.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: MR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7j: remove-quay (step key: `remove_quay`, guarded)
+
+> **NOT RECOMMENDED.** Quay repos store built images used by all supported versions.
+> Skipped by default.
+> **VPN must be active.**
+
+**Execute if** `remove_quay` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_quay.sh" --jira-url "$JIRA_URL")
 EXIT_CODE=$?
 ```
 
@@ -303,24 +418,28 @@ The wrapper scripts are self-contained; editing scripts mid-run is strictly forb
 
 ## Step 8: Post Pending PRs/MRs Summary to Jira
 
+**Skip entirely in dry-run mode.**
+
 **Only post a comment if something changed this run** (i.e., `NEWLY_MERGED` is non-empty OR
 at least one new PR/MR was raised).
 
 ```bash
-SOMETHING_CHANGED="false"
-[[ -n "$NEWLY_MERGED" ]] && SOMETHING_CHANGED="true"
-[[ "${NEW_PRS_RAISED:-false}" == "true" ]] && SOMETHING_CHANGED="true"
+if [[ "$DRY_RUN" != "true" ]]; then
+  SOMETHING_CHANGED="false"
+  [[ -n "$NEWLY_MERGED" ]] && SOMETHING_CHANGED="true"
+  [[ "${NEW_PRS_RAISED:-false}" == "true" ]] && SOMETHING_CHANGED="true"
 
-if [[ "$SOMETHING_CHANGED" == "true" ]]; then
-  PENDING_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
-    --state           "$PIPELINE_STATE" \
-    --component-name  "$COMPONENT_NAME" \
-    --product-context "$PRODUCT_CONTEXT" \
-    --mode            "pending-only")
+  if [[ "$SOMETHING_CHANGED" == "true" ]]; then
+    PENDING_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
+      --state           "$PIPELINE_STATE" \
+      --component-name  "$COMPONENT_NAME" \
+      --product-context "$PRODUCT_CONTEXT" \
+      --mode            "pending-only")
 
-  if [[ -n "$PENDING_COMMENT" ]]; then
-    uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-      --comment "$PENDING_COMMENT" || true
+    if [[ -n "$PENDING_COMMENT" ]]; then
+      uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+        --comment "$PENDING_COMMENT" || true
+    fi
   fi
 fi
 ```
@@ -338,34 +457,38 @@ ALL_DONE=$(jq -r '
 ' "$PIPELINE_STATE")
 ```
 
-**If `ALL_DONE == "true"`:**
+**If `ALL_DONE == "true"` and not dry-run:**
 
 ```bash
-FULL_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
-  --state           "$PIPELINE_STATE" \
-  --component-name  "$COMPONENT_NAME" \
-  --product-context "$PRODUCT_CONTEXT" \
-  --mode            "full")
+if [[ "$DRY_RUN" != "true" ]]; then
+  FULL_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
+    --state           "$PIPELINE_STATE" \
+    --component-name  "$COMPONENT_NAME" \
+    --product-context "$PRODUCT_CONTEXT" \
+    --mode            "full")
 
-uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --comment   "$FULL_COMMENT" \
-  --add-label "component-offboarding-completed" \
-  --status    "Resolved"
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --comment   "$FULL_COMMENT" \
+    --add-label "component-offboarding-completed" \
+    --status    "Resolved"
 
-echo "[orchestrator] All steps complete — Jira resolved with component-offboarding-completed label."
+  echo "[orchestrator] All steps complete — Jira resolved with component-offboarding-completed label."
+else
+  echo "[DRY RUN] All steps would be complete. WOULD resolve Jira and add component-offboarding-completed label."
+fi
 ```
 
-**If `ALL_DONE == "false"` and any PRs/MRs are pending:**
-
-Transition Jira to "Review":
+**If `ALL_DONE == "false"` and any PRs/MRs are pending (skip in dry-run):**
 
 ```bash
-bash "$SCRIPTS_DIR/raise_jira_review.sh" \
-  --workdir         "$WORKDIR" \
-  --jira-url        "$JIRA_URL" \
-  --scripts-dir     "$SCRIPTS_DIR" \
-  --component-name  "$COMPONENT_NAME" \
-  --product-context "$PRODUCT_CONTEXT"
+if [[ "$DRY_RUN" != "true" ]]; then
+  bash "$SCRIPTS_DIR/raise_jira_review.sh" \
+    --workdir         "$WORKDIR" \
+    --jira-url        "$JIRA_URL" \
+    --scripts-dir     "$SCRIPTS_DIR" \
+    --component-name  "$COMPONENT_NAME" \
+    --product-context "$PRODUCT_CONTEXT"
+fi
 ```
 
 ---
@@ -380,12 +503,23 @@ bash "$SCRIPTS_DIR/raise_jira_review.sh" \
   Jira           : <JIRA_URL>
 
 PRs / MRs:
-  remove_krd            : <steps.remove_krd.status> — <steps.remove_krd.mr_url or "not yet raised">
-  remove_okc            : <steps.remove_okc.status> — <steps.remove_okc.pr_url or "not yet raised">
-  remove_pull_pipelines : <steps.remove_pull_pipelines.status or "N/A (ODH)">
-  remove_bundle         : <steps.remove_bundle.status> — <steps.remove_bundle.pr_url or "not yet raised">
-  remove_operator       : <steps.remove_operator.status>
-  remove_product_listing: <steps.remove_product_listing.status or "N/A (ODH)">
+  Phase 1 (parallel):
+  remove_operator        : <status> — <pr_url or "not yet raised">
+  remove_bundle          : <status> — <pr_url or "not yet raised">
+  remove_auto_merge      : <status or "skipped (shared infra — not recommended)">
+  remove_renovate        : <status or "skipped (shared infra — not recommended)">
+
+  Phase 2 (after Phase 1):
+  remove_okc             : <status> — <pr_url or "not yet raised">
+  remove_pull_pipelines  : <status or "N/A (ODH)">
+
+  Phase 3 (after Phase 2):
+  remove_krd             : <status> — <mr_url or "not yet raised">
+
+  Phase 4 (guarded — not recommended):
+  remove_product_listing : <status or "skipped (shared infra — not recommended)">
+  remove_delivery_repo   : <status or "skipped (shared infra — not recommended)">
+  remove_quay            : <status or "skipped (shared infra — not recommended)">
 
 Newly merged this run : <NEWLY_MERGED or "none">
 State file            : $PIPELINE_STATE
@@ -403,11 +537,15 @@ Re-run this skill after PRs/MRs are merged to advance the pipeline.
 | Tool not installed | 1 | Install per Step 1 guidance |
 | YAML not attached to Jira | 3 | Run `/create-component-offboarding-jira <jira-url>` first |
 | YAML fails schema validation | 3 | Fix YAML, re-upload to Jira, re-run |
-| VPN not active | 7a | Activate Red Hat VPN; re-run (idempotent) |
+| VPN not active | 7a, 7f, 7i, 7j | Activate Red Hat VPN; re-run (idempotent) |
 | KRD MR fails | 7a | Check VPN; GITLAB_TOKEN needs write_repository scope |
 | OKC/RKC PR fails | 7b | Verify GITHUB_TOKEN repo scope and push access |
 | Pull pipelines PR fails | 7c | Check GITHUB_TOKEN push access to rhoai-konflux-central |
 | Bundle PR fails | 7d | Verify GITHUB_TOKEN push access to build-config repo |
 | Operator PR fails | 7e | Verify GITHUB_TOKEN push access to operator repo |
 | Product listing MR fails | 7f | Check VPN; GITLAB_TOKEN needs write_repository scope |
+| Auto-merge PR fails | 7g | Verify GITHUB_TOKEN push access to rhods-devops-infra |
+| Renovate PR fails | 7h | Verify GITHUB_TOKEN push access to konflux-central |
+| Delivery repo MR fails | 7i | Check VPN; GITLAB_TOKEN needs write_repository scope |
+| Quay MR fails | 7j | Check VPN; GITLAB_TOKEN needs write_repository scope |
 | State lost / fresh checkout | Any | Re-run; pipeline state rebuilt from Jira labels |

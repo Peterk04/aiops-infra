@@ -27,6 +27,7 @@ JIRA_ID="${JIRA_URL%/}"; JIRA_ID="${JIRA_ID##*/}"
 WORKDIR="${WORKDIR:-$(pwd)/${JIRA_ID}}"
 PIPELINE_STATE="${PIPELINE_STATE:-${WORKDIR}/pipeline_state.json}"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPTS_DIR/dry_run_helpers.sh"
 
 [[ ! -f "$PIPELINE_STATE" ]] && {
   echo "ERROR: pipeline_state.json not found at $PIPELINE_STATE" >&2; exit 1
@@ -186,6 +187,14 @@ yamllint -s -f colored .gitlab-ci.yml .gitlab tenants-config/cluster 2>&1 || tru
 cd "$CLONE_DIR"
 git add -A
 git commit -m "Remove ${KONFLUX_COMPONENT_NAME} Component from konflux-release-data"
+
+if is_dry_run; then
+  dry_run_show_diff "$CLONE_DIR"
+  dry_run_skip_pr "GitLab MR" "Remove ${KONFLUX_COMPONENT_NAME} Component (offboarding)" "main"
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step remove_krd --status dry_run
+  exit 0
+fi
 
 cd "$CLONE_DIR/tenants-config"
 ./verify-manifests.sh "$KUSTOMIZE_BIN" || {

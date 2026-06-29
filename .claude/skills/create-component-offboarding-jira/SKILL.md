@@ -154,6 +154,21 @@ _If `product_context == RHOAI`:_
 → Convert: `yes` → `true`, `no` → `false`.
 → Store in `is_operator` (boolean).
 
+**Q6 — Component exists in older versions?**
+> Does this component still exist in older RHOAI versions that are actively releasing?
+> Default: **true** (recommended).
+>
+> When true, shared infrastructure (Quay repo, delivery repo, product listing,
+> auto-merge config, renovate config) will NOT be removed during offboarding.
+> These resources are used across all supported versions — removing them would
+> break image delivery and dependency updates for older releases.
+>
+> Only answer "false" if you are certain this component is not needed by any
+> currently supported RHOAI version.
+> (true / false)
+
+→ Store in `component_exists_in_older_versions`. Default: `true`.
+
 ---
 
 ## Step 4: Show collected values and confirm
@@ -163,12 +178,13 @@ Display a summary table:
 ```
 Component offboarding details collected:
 
-  product_context          : <value>
-  build_type               : <value or N/A>   # only shown for ODH
-  target_rhoai_version     : <value or N/A>   # only shown for RHOAI
-  component_name           : <value>
-  repo_url                 : <value>
-  is_operator              : <value>
+  product_context                    : <value>
+  build_type                         : <value or N/A>   # only shown for ODH
+  target_rhoai_version               : <value or N/A>   # only shown for RHOAI
+  component_name                     : <value>
+  repo_url                           : <value>
+  is_operator                        : <value>
+  component_exists_in_older_versions : <value>
 
 Proceed? (yes / no / edit)
 ```

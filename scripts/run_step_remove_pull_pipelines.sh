@@ -23,6 +23,7 @@ JIRA_ID="${JIRA_URL%/}"; JIRA_ID="${JIRA_ID##*/}"
 WORKDIR="${WORKDIR:-$(pwd)/${JIRA_ID}}"
 PIPELINE_STATE="${PIPELINE_STATE:-${WORKDIR}/pipeline_state.json}"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPTS_DIR/dry_run_helpers.sh"
 
 [[ ! -f "$PIPELINE_STATE" ]] && {
   echo "ERROR: pipeline_state.json not found at $PIPELINE_STATE" >&2; exit 1
@@ -69,7 +70,7 @@ PLAYPEN_OUTPUT=$(bash "$SCRIPTS_DIR/setup_github_playpen.sh" \
   --src-url     "$RKC_URL" \
   --src-branch  "main" \
   --dest-branch "${JIRA_ID}-offboard-pull" \
-  --sparse-files "pipelineruns/$REPO_NAME") || {
+  --sparse-files "pipelineruns/$REPO_NAME .github/workflows/sync-pipelineruns.yml") || {
   echo "ERROR: Playpen setup failed." >&2; exit 1
 }
 CLONE_DIR=$(echo "$PLAYPEN_OUTPUT" | head -1)
@@ -79,9 +80,25 @@ TEKTON_DIR="$CLONE_DIR/pipelineruns/$REPO_NAME/.tekton"
 TARGET_FILE="$TEKTON_DIR/$PIPELINERUN_FILE"
 [[ -f "$TARGET_FILE" ]] && rm "$TARGET_FILE"
 
+# Remove repo entry from sync-pipelineruns.yml workflow
+SYNC_WORKFLOW="$CLONE_DIR/.github/workflows/sync-pipelineruns.yml"
+if [[ -f "$SYNC_WORKFLOW" ]] && grep -qF "$REPO_NAME" "$SYNC_WORKFLOW" 2>/dev/null; then
+  sed -i '' "/^[[:space:]]*- ${REPO_NAME}$/d" "$SYNC_WORKFLOW"
+  echo "Removed '${REPO_NAME}' from sync-pipelineruns.yml"
+fi
+
 cd "$CLONE_DIR"
 git add -A
-git commit -m "Remove ${COMPONENT_NAME} pull-request PipelineRun (offboarding)"
+git commit -m "Remove ${COMPONENT_NAME} pull-request PipelineRun and sync entry (offboarding)"
+
+if is_dry_run; then
+  dry_run_show_diff "$CLONE_DIR"
+  dry_run_skip_pr "GitHub PR" "Remove ${COMPONENT_NAME} pull-request PipelineRun and sync entry (offboarding)" "main"
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step remove_pull_pipelines --status dry_run
+  exit 0
+fi
+
 git push origin "$DEST_BRANCH" || {
   git fetch --unshallow origin 2>/dev/null || true
   git push origin "$DEST_BRANCH" || { echo "ERROR: Push failed." >&2; exit 1; }
