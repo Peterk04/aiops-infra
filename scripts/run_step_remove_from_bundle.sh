@@ -131,7 +131,7 @@ if [[ "$CHANGES_MADE" == "false" ]]; then
   echo "Component '${COMPONENT_NAME}' not found in bundle — already removed."
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
     --add-label "offboard-bundle-pr-merged" \
-    --comment "Component '${COMPONENT_NAME}' already absent from bundle-patch.yaml. No action needed." || true
+    --comment "Component '${COMPONENT_NAME}' already absent from bundle config (bundle-patch.yaml, build-config.yaml, bundle/Dockerfile). No action needed." || true
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
     --state "$PIPELINE_STATE" --step remove_bundle --status done
   exit 2
@@ -151,7 +151,7 @@ fi
 bash "$SCRIPTS_DIR/git_commit_push.sh" \
   --clone-dir "$CLONE_DIR" \
   --files     "$FILES_CHANGED" \
-  --message   "Remove ${COMPONENT_NAME} from bundle relatedImages (offboarding)" \
+  --message   "Remove ${COMPONENT_NAME} from bundle config (offboarding)" \
   --branch    "$DEST_BRANCH"
 
 PR_URL=""
@@ -161,9 +161,13 @@ for attempt in 1 2 3; do
     --src-branch  "$DEST_BRANCH" \
     --dest-url    "$BC_URL" \
     --dest-branch "$SRC_BRANCH" \
-    --title       "Remove ${COMPONENT_NAME} from bundle relatedImages (offboarding)" \
-    --description "Removes relatedImages entry for '${COMPONENT_NAME}' from bundle/bundle-patch.yaml.
+    --title       "Remove ${COMPONENT_NAME} from bundle config (offboarding)" \
+    --description "Removes '${COMPONENT_NAME}' from bundle configuration:
+- bundle/bundle-patch.yaml (relatedImages entry)
+- config/build-config.yaml (repo_mappings entry, RHOAI only)
+- bundle/Dockerfile (ARG/LABEL lines, if present)
 
+Files changed: ${FILES_CHANGED}
 Jira: ${JIRA_URL}" 2>/dev/null) && break
   [[ "$attempt" -eq 3 ]] && {
     echo "ERROR: Could not create PR after 3 attempts." >&2; exit 1
@@ -173,9 +177,10 @@ done
 
 uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
   --add-label "offboard-bundle-pr-raised" \
-  --comment "[step:remove_bundle] GitHub PR raised to remove '${COMPONENT_NAME}' from bundle relatedImages.
+  --comment "[step:remove_bundle] GitHub PR raised to remove '${COMPONENT_NAME}' from bundle config (bundle-patch.yaml, build-config.yaml, bundle/Dockerfile ARG/LABEL lines).
 
-PR URL: ${PR_URL}" || true
+PR URL: ${PR_URL}
+Files changed: ${FILES_CHANGED}" || true
 
 bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
   --state "$PIPELINE_STATE" --step remove_bundle \
