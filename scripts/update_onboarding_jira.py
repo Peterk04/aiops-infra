@@ -39,6 +39,7 @@ def main():
     p.add_argument("--dockerfile-path", required=True)
     p.add_argument("--short-description", default="")
     p.add_argument("--architectures", default="")
+    p.add_argument("--target-version", default="")
     args = p.parse_args()
 
     email = os.environ.get("JIRA_USER_EMAIL", "")
@@ -146,9 +147,9 @@ def main():
     else:
         print("  No known description table found — skipping table update.")
 
-    # --- Set Target Version (RHOAI only) ---
-    if args.product_context == "RHOAI":
-        target_version_name = args.repo_branch
+    # --- Set Target Version ---
+    target_version_name = args.target_version or (args.repo_branch if args.product_context == "RHOAI" else None)
+    if target_version_name:
         try:
             _, project_versions = jira_request(
                 f"{jira_server}/rest/api/2/project/{jira_id.split('-')[0]}/versions",

@@ -155,8 +155,6 @@ _Execute only when `product_context == ODH` and `build_type == Release`. Skip en
 → Store in `odh_release_tag`. Must be non-empty.
   Re-ask if empty.
 
-_If `product_context == RHOAI`:_
-
 **Q2a — Target RHOAI version**
 > What is the target RHOAI version?
 > Format: `x.y`, `x.y.0`, `x.y-eaN`, `x.y-ea-N`, `x.y-ea.N`, `x.y.0-eaN`, `x.y.0-ea-N`, or `x.y.0-ea.N`
@@ -169,6 +167,8 @@ Transform the validated input to the canonical form and store in `target_rhoai_v
 - Extract `VERSION_X` = first integer, `VERSION_Y` = second integer, `VERSION_N` = EA number (after `-ea`, `-ea-`, or `-ea.`), or empty if no EA suffix
 - If `VERSION_N` is non-empty: `target_rhoai_version = "<VERSION_X>.<VERSION_Y>-ea-<VERSION_N>"` (e.g. `3.4-ea-2`)
 - Otherwise: `target_rhoai_version = "<VERSION_X>.<VERSION_Y>"` (e.g. `3.4`)
+
+_If `product_context == RHOAI`:_
 
 **Q2b — CPU architectures**
 > Which CPU architectures should this component build for?
@@ -305,9 +305,13 @@ _If `product_context == ODH`:_
 
 → Store in `repo_branch`. Must be non-empty.
 
+Derive `jira_target_version` from `target_rhoai_version` — do NOT ask the user:
+- If `target_rhoai_version` has no EA suffix (e.g. `3.5`): `jira_target_version = "rhoai-<VERSION_X>.<VERSION_Y>"` (e.g. `rhoai-3.5`)
+- If `target_rhoai_version` has an EA suffix (e.g. `3.5-ea-1`): `jira_target_version = "rhoai-<VERSION_X>.<VERSION_Y>-ea.<VERSION_N>"` (e.g. `rhoai-3.5-ea.1`)
+
 _If `product_context == RHOAI`:_
 
-Derive `repo_branch` automatically from `target_rhoai_version` — do NOT ask the user:
+Derive `repo_branch` automatically from `target_rhoai_version` using the same formula — do NOT ask the user:
 - If `target_rhoai_version` has no EA suffix (e.g. `3.5`): `repo_branch = "rhoai-<VERSION_X>.<VERSION_Y>"` (e.g. `rhoai-3.5`)
 - If `target_rhoai_version` has an EA suffix (e.g. `3.5-ea-1`): `repo_branch = "rhoai-<VERSION_X>.<VERSION_Y>-ea.<VERSION_N>"` (e.g. `rhoai-3.5-ea.1`)
 
@@ -361,7 +365,7 @@ Component onboarding details collected:
   product_context              : <value>
   build_type / architectures   : <value>
   odh_release_tag              : <value or N/A>   # only shown for ODH Release
-  target_rhoai_version         : <value or N/A>   # only shown for RHOAI
+  target_rhoai_version         : <value>
   component_name               : <value>
   release_category             : <value or N/A>   # only shown for RHOAI
   repo_url                     : <value>
@@ -624,6 +628,11 @@ if [[ "$product_context" == "RHOAI" ]]; then
     --short-description "$short_description"
     --architectures "$(IFS=,; echo "${architectures[*]}")"
   )
+fi
+
+# ODH: pass derived Jira target version
+if [[ "$product_context" == "ODH" ]]; then
+  UPDATE_JIRA_ARGS+=(--target-version "$jira_target_version")
 fi
 
 uv run --script scripts/update_onboarding_jira.py "$JIRA_URL" "${UPDATE_JIRA_ARGS[@]}"
