@@ -2,7 +2,8 @@
 # Offboarding: remove component from konflux-release-data.
 #
 # ODH: removes Component document from opendatahub-ci-components.yaml
-# RHOAI: removes from ProjectDevelopmentStream YAML, RPA stage/prod, automation/resources.yaml
+# RHOAI: removes from ProjectDevelopmentStream YAML + automation/resources.yaml
+#        (RPA removal is handled separately by run_step_remove_krd_rpa.sh)
 #
 # Exit codes:
 #   0  MR raised — prints MR_URL=<url>; writes pipeline_state.json
@@ -47,8 +48,6 @@ eval "$(bash "$SCRIPTS_DIR/parse_offboarding_details.sh" \
   --jira-id     "$JIRA_ID" \
   --scripts-dir "$SCRIPTS_DIR")"
 
-TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' 2>/dev/null | tr -d '"' || echo "")
-
 KUSTOMIZE_BIN="kustomize"
 if ! command -v kustomize &>/dev/null && [[ -x "${HOME}/.local/bin/kustomize" ]]; then
   KUSTOMIZE_BIN="${HOME}/.local/bin/kustomize"
@@ -56,7 +55,7 @@ if ! command -v kustomize &>/dev/null && [[ -x "${HOME}/.local/bin/kustomize" ]]
 fi
 
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
-  SPARSE_PATHS="tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant tenants-config/auto-generated/cluster/stone-prod-p02/tenants/rhoai-tenant config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai"
+  SPARSE_PATHS="tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant tenants-config/auto-generated/cluster/stone-prod-p02/tenants/rhoai-tenant"
 else
   SPARSE_PATHS="tenants-config/cluster/stone-prd-rh01/tenants/open-data-hub-tenant tenants-config/auto-generated/cluster/stone-prd-rh01/tenants/open-data-hub-tenant"
 fi
@@ -113,45 +112,14 @@ if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
 elif [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" --version "$TARGET_RHOAI_VERSION")"
 
-  if [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)-ea-([0-9]+)$ ]]; then
-    VERSION_X="${BASH_REMATCH[1]}"; VERSION_Y="${BASH_REMATCH[2]}"; VERSION_N="${BASH_REMATCH[3]}"
-    VERSION_NAME="v${VERSION_X}.${VERSION_Y}-ea.${VERSION_N}"
-    RPA_VAR="v${VERSION_X}-${VERSION_Y}-ea-${VERSION_N}"
-  else
-    [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]
-    VERSION_X="${BASH_REMATCH[1]}"; VERSION_Y="${BASH_REMATCH[2]}"; VERSION_N=""
-    VERSION_NAME="v${VERSION_X}.${VERSION_Y}"
-    RPA_VAR="v${VERSION_X}-${VERSION_Y}"
-  fi
-
   # Remove from ProjectDevelopmentStream YAML
-  PDS_FILE="$CLONE_DIR/tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant/${VERSION_NAME}/ProjectDevelopmentStream-${VERSION_NAME}.yaml"
+  PDS_FILE="$CLONE_DIR/tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant/${CONTENT_STREAM_TAG}/ProjectDevelopmentStream-${CONTENT_STREAM_TAG}.yaml"
   if [[ -f "$PDS_FILE" ]] && grep -q "name: ${COMPONENT_NAME}-{{.versionName}}" "$PDS_FILE" 2>/dev/null; then
     uv run --script "$SCRIPTS_DIR/edit_yaml.py" remove-multidoc-list-item \
       "$PDS_FILE" \
       --doc-kind "ProjectDevelopmentStreamTemplate" \
       --array-key "spec.resources" \
       --name "${COMPONENT_NAME}-{{.versionName}}" || true
-    CHANGES_MADE=true
-  fi
-
-  # Remove from RPA stage
-  RPA_STAGE="$CLONE_DIR/config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai/rhoai-onprem-${RPA_VAR}-components-stage.yaml"
-  if [[ -f "$RPA_STAGE" ]] && grep -q "name: ${COMPONENT_NAME}-${RPA_VAR}" "$RPA_STAGE" 2>/dev/null; then
-    uv run --script "$SCRIPTS_DIR/edit_yaml.py" remove-rpa-component \
-      "$RPA_STAGE" \
-      --array-key "spec.data.mapping.components" \
-      --name "${COMPONENT_NAME}-${RPA_VAR}" || true
-    CHANGES_MADE=true
-  fi
-
-  # Remove from RPA prod
-  RPA_PROD="$CLONE_DIR/config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai/rhoai-onprem-${RPA_VAR}-components-prod.yaml"
-  if [[ -f "$RPA_PROD" ]] && grep -q "name: ${COMPONENT_NAME}-${RPA_VAR}" "$RPA_PROD" 2>/dev/null; then
-    uv run --script "$SCRIPTS_DIR/edit_yaml.py" remove-rpa-component \
-      "$RPA_PROD" \
-      --array-key "spec.data.mapping.components" \
-      --name "${COMPONENT_NAME}-${RPA_VAR}" || true
     CHANGES_MADE=true
   fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: eval "$(bash init_offboarding_pipeline.sh --jira-url <url> [--workdir-override <path>] [--product-context ODH|RHOAI] [--component-name <name>] [--is-operator true|false])"
+# Usage: eval "$(bash init_offboarding_pipeline.sh --jira-url <url> [--workdir-override <path>] [--product-context ODH|RHOAI] [--component-name <name>] [--is-operator true|false] [--component-exists-in-older-versions true|false])"
 # Creates/resumes pipeline_state.json for component offboarding and sets PIPELINE_STATE.
 set -euo pipefail
 
@@ -8,14 +8,16 @@ WORKDIR_OVERRIDE=""
 PRODUCT_CONTEXT=""
 COMPONENT_NAME=""
 IS_OPERATOR="false"
+COMPONENT_EXISTS_IN_OLDER_VERSIONS="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --jira-url)         JIRA_URL="$2";         shift 2 ;;
-    --workdir-override) WORKDIR_OVERRIDE="$2"; shift 2 ;;
-    --product-context)  PRODUCT_CONTEXT="$2";  shift 2 ;;
-    --component-name)   COMPONENT_NAME="$2";   shift 2 ;;
-    --is-operator)      IS_OPERATOR="$2";      shift 2 ;;
+    --jira-url)                           JIRA_URL="$2";                           shift 2 ;;
+    --workdir-override)                   WORKDIR_OVERRIDE="$2";                   shift 2 ;;
+    --product-context)                    PRODUCT_CONTEXT="$2";                    shift 2 ;;
+    --component-name)                     COMPONENT_NAME="$2";                     shift 2 ;;
+    --is-operator)                        IS_OPERATOR="$2";                        shift 2 ;;
+    --component-exists-in-older-versions) COMPONENT_EXISTS_IN_OLDER_VERSIONS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -44,17 +46,32 @@ mkdir -p "$WORKDIR"
 PIPELINE_STATE="${WORKDIR}/pipeline_state.json"
 
 if [[ ! -f "$PIPELINE_STATE" ]]; then
-  # All offboarding steps are independent (no dependency chains).
-  # RHOAI skips: (none specific to ODH)
-  # ODH skips: remove_pull_pipelines (RHOAI-only)
+  # --- Operator step: skipped if is_operator=false ---
+  OP_STATUS="pending"
+  if [[ "$IS_OPERATOR" != "true" ]]; then
+    OP_STATUS="skipped"
+  fi
+
+  # --- RHOAI-only steps ---
   SKIP_RHOAI_ONLY="pending"
   if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
     SKIP_RHOAI_ONLY="skipped"
   fi
 
-  OP_STATUS="pending"
-  if [[ "$IS_OPERATOR" != "true" ]]; then
-    OP_STATUS="skipped"
+  # --- Guarded steps: skipped by default (component_exists_in_older_versions=true) ---
+  GUARDED_STATUS="skipped"
+  if [[ "$COMPONENT_EXISTS_IN_OLDER_VERSIONS" == "false" ]]; then
+    GUARDED_STATUS="pending"
+  fi
+
+  GUARDED_RHOAI_STATUS="skipped"
+  if [[ "$COMPONENT_EXISTS_IN_OLDER_VERSIONS" == "false" && "$PRODUCT_CONTEXT" != "ODH" ]]; then
+    GUARDED_RHOAI_STATUS="pending"
+  fi
+
+  GUARDED_RHOAI_ONLY_STATUS="skipped"
+  if [[ "$COMPONENT_EXISTS_IN_OLDER_VERSIONS" == "false" && "$PRODUCT_CONTEXT" != "ODH" ]]; then
+    GUARDED_RHOAI_ONLY_STATUS="pending"
   fi
 
   cat > "$PIPELINE_STATE" <<EOF
@@ -63,39 +80,12 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
   "component_name": "${COMPONENT_NAME}",
   "product_context": "${PRODUCT_CONTEXT}",
   "is_operator": ${IS_OPERATOR},
+  "component_exists_in_older_versions": ${COMPONENT_EXISTS_IN_OLDER_VERSIONS},
   "last_status_change_at": "",
   "steps": {
     "validate": {
       "status": "pending",
       "depends_on": []
-    },
-    "remove_krd": {
-      "status": "pending",
-      "mr_url": "",
-      "depends_on": [],
-      "label_raised": "offboard-krd-mr-raised",
-      "label_done": "offboard-krd-mr-merged"
-    },
-    "remove_okc": {
-      "status": "pending",
-      "pr_url": "",
-      "depends_on": [],
-      "label_raised": "offboard-okc-pr-raised",
-      "label_done": "offboard-okc-pr-merged"
-    },
-    "remove_pull_pipelines": {
-      "status": "${SKIP_RHOAI_ONLY}",
-      "pr_url": "",
-      "depends_on": [],
-      "label_raised": "offboard-pull-pipelines-pr-raised",
-      "label_done": "offboard-pull-pipelines-pr-merged"
-    },
-    "remove_bundle": {
-      "status": "pending",
-      "pr_url": "",
-      "depends_on": [],
-      "label_raised": "offboard-bundle-pr-raised",
-      "label_done": "offboard-bundle-pr-merged"
     },
     "remove_operator": {
       "status": "${OP_STATUS}",
@@ -104,12 +94,75 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
       "label_raised": "offboard-operator-pr-raised",
       "label_done": "offboard-operator-pr-merged"
     },
-    "remove_product_listing": {
+    "remove_bundle": {
+      "status": "pending",
+      "pr_url": "",
+      "depends_on": [],
+      "label_raised": "offboard-bundle-pr-raised",
+      "label_done": "offboard-bundle-pr-merged"
+    },
+    "remove_auto_merge": {
+      "status": "${GUARDED_RHOAI_ONLY_STATUS}",
+      "pr_url": "",
+      "depends_on": [],
+      "label_raised": "offboard-auto-merge-pr-raised",
+      "label_done": "offboard-auto-merge-pr-merged"
+    },
+    "remove_renovate": {
+      "status": "${GUARDED_RHOAI_ONLY_STATUS}",
+      "pr_url": "",
+      "depends_on": [],
+      "label_raised": "offboard-renovate-pr-raised",
+      "label_done": "offboard-renovate-pr-merged"
+    },
+    "remove_okc": {
+      "status": "pending",
+      "pr_url": "",
+      "depends_on": ["remove_operator", "remove_bundle"],
+      "label_raised": "offboard-okc-pr-raised",
+      "label_done": "offboard-okc-pr-merged"
+    },
+    "remove_pull_pipelines": {
+      "status": "${SKIP_RHOAI_ONLY}",
+      "pr_url": "",
+      "depends_on": ["remove_operator", "remove_bundle"],
+      "label_raised": "offboard-pull-pipelines-pr-raised",
+      "label_done": "offboard-pull-pipelines-pr-merged"
+    },
+    "remove_krd": {
+      "status": "pending",
+      "mr_url": "",
+      "depends_on": ["remove_okc", "remove_pull_pipelines"],
+      "label_raised": "offboard-krd-mr-raised",
+      "label_done": "offboard-krd-mr-merged"
+    },
+    "remove_krd_rpa": {
       "status": "${SKIP_RHOAI_ONLY}",
       "mr_url": "",
-      "depends_on": [],
+      "depends_on": ["remove_okc", "remove_pull_pipelines"],
+      "label_raised": "offboard-krd-rpa-mr-raised",
+      "label_done": "offboard-krd-rpa-mr-merged"
+    },
+    "remove_product_listing": {
+      "status": "${GUARDED_RHOAI_STATUS}",
+      "mr_url": "",
+      "depends_on": ["remove_krd"],
       "label_raised": "offboard-product-listing-mr-raised",
       "label_done": "offboard-product-listing-done"
+    },
+    "remove_delivery_repo": {
+      "status": "${GUARDED_RHOAI_STATUS}",
+      "mr_url": "",
+      "depends_on": ["remove_krd"],
+      "label_raised": "offboard-delivery-repo-mr-raised",
+      "label_done": "offboard-delivery-repo-done"
+    },
+    "remove_quay": {
+      "status": "${GUARDED_STATUS}",
+      "mr_url": "",
+      "depends_on": ["remove_krd"],
+      "label_raised": "offboard-quay-mr-raised",
+      "label_done": "offboard-quay-done"
     }
   }
 }
@@ -135,7 +188,9 @@ else
     if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
       jq '
         .steps |= with_entries(
-          if .key == "remove_pull_pipelines"
+          if (.key == "remove_pull_pipelines" or .key == "remove_auto_merge"
+              or .key == "remove_renovate" or .key == "remove_product_listing"
+              or .key == "remove_delivery_repo" or .key == "remove_krd_rpa")
              and .value.status == "pending"
           then .value.status = "skipped"
           else .
