@@ -65,13 +65,8 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   [[ -z "$TARGET_RHOAI_VERSION" ]] && {
     echo "ERROR: target_rhoai_version required for RHOAI but missing." >&2; exit 1
   }
-  if [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)-ea-([0-9]+)$ ]]; then
-    KONFLUX_COMPONENT_NAME="${COMPONENT_NAME}-v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-ea-${BASH_REMATCH[3]}"
-  elif [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-    KONFLUX_COMPONENT_NAME="${COMPONENT_NAME}-v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
-  else
-    echo "ERROR: Cannot parse target_rhoai_version '${TARGET_RHOAI_VERSION}'." >&2; exit 1
-  fi
+  eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" --version "$TARGET_RHOAI_VERSION")"
+  KONFLUX_COMPONENT_NAME="${COMPONENT_NAME}-${VERSION_VAR}"
 else
   if [[ "$COMPONENT_NAME" == *-ci ]]; then
     KONFLUX_COMPONENT_NAME="$COMPONENT_NAME"
@@ -110,8 +105,6 @@ if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
   fi
 
 elif [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
-  eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" --version "$TARGET_RHOAI_VERSION")"
-
   # Remove from ProjectDevelopmentStream YAML
   PDS_FILE="$CLONE_DIR/tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant/${CONTENT_STREAM_TAG}/ProjectDevelopmentStream-${CONTENT_STREAM_TAG}.yaml"
   if [[ -f "$PDS_FILE" ]] && grep -q "name: ${COMPONENT_NAME}-{{.versionName}}" "$PDS_FILE" 2>/dev/null; then

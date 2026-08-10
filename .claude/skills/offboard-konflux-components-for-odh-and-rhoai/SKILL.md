@@ -16,27 +16,25 @@ Order is the reverse of onboarding — downstream consumers are removed first:
 **Phase 1** (parallel, no dependencies):
 1. `remove-from-operator` — GitHub PR to remove from operator manifests + nudging **(if is_operator=true)**
 2. `remove-from-bundle` — GitHub PR to remove relatedImages, build-config, Dockerfile entries
-3. `remove-auto-merge` — GitHub PR to remove auto-merge config ⚠️ **(RHOAI, guarded)**
-4. `remove-renovate` — GitHub PR to remove Renovate config ⚠️ **(RHOAI, guarded)**
 
 **Phase 2** (after Phase 1 operator + bundle merge):
-5. `remove-from-okc` — GitHub PR to remove push PipelineRun from Konflux Central
-6. `remove-pull-pipelines` — GitHub PR to remove pull-request PipelineRun + sync workflow entry **(RHOAI only)**
+3. `remove-from-okc` — GitHub PR to remove push PipelineRun from Konflux Central
+4. `remove-pull-pipelines` — GitHub PR to remove pull-request PipelineRun + sync workflow entry **(RHOAI only)**
 
 **Phase 3** (after Phase 2 merges):
-7. `remove-from-krd` — GitLab MR to konflux-release-data (PDS + automation)
-7b. `remove-krd-rpa` — GitLab MR to remove from ReleasePlanAdmission **(RHOAI only; separate MR to avoid Validator conflicts)**
+5. `remove-from-krd` — GitLab MR to konflux-release-data (PDS + automation)
+6. `remove-krd-rpa` — GitLab MR to remove from ReleasePlanAdmission **(RHOAI only; separate MR to avoid Validator conflicts)**
 
-**Phase 4** (after Phase 3, guarded — **NOT RECOMMENDED** in most cases):
-8. `remove-product-listing` — GitLab MR to remove from pyxis product listing ⚠️
-9. `remove-delivery-repo` — GitLab MR to remove delivery repo entry ⚠️
-10. `remove-quay` — GitLab MR to remove Quay repo config ⚠️
+**Phase 4** (after Phase 3, guarded — skipped by default):
+7. `remove-product-listing` — GitLab MR to remove from pyxis product listing ⚠️
 
 > **⚠️ Guarded steps** are skipped by default (`component_exists_in_older_versions=true`).
 > These remove shared infrastructure used across all supported RHOAI versions.
-> Removing them will break image delivery, dependency updates, or SHA bumps for
-> any older version that still uses this component. Only enable when you are certain
-> the component is not needed by any currently supported version.
+> Only enable when you are certain the component is not needed by any supported version.
+>
+> **Not yet implemented:** `remove-auto-merge`, `remove-renovate`, `remove-delivery-repo`,
+> `remove-quay`. State entries exist (skipped) but wrapper scripts are not yet written.
+> `remove-product-listing` is implemented but guarded.
 
 **Re-run model:** invoke this skill any number of times for the same Jira URL.
 Each run checks Jira labels and PR/MR API status to determine what's already done,
@@ -162,7 +160,6 @@ bash "$SCRIPTS_DIR/init_offboarding_pipeline.sh" \
   --product-context  "$PRODUCT_CONTEXT" \
   --component-name   "$COMPONENT_NAME" \
   --is-operator      "$IS_OPERATOR" \
-  --component-exists-in-older-versions "${COMPONENT_EXISTS_IN_OLDER_VERSIONS:-true}" \
   > /dev/null
 ```
 
@@ -229,7 +226,65 @@ Track whether any PR/MR was raised this run:
 NEW_PRS_RAISED="false"
 ```
 
-### Step 7a: remove-from-krd (step key: `remove_krd`)
+### Phase 1
+
+### Step 7a: remove-from-operator (step key: `remove_operator`)
+
+**Execute if** `remove_operator` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_operator.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: skipped (is_operator=false) or already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7b: remove-from-bundle (step key: `remove_bundle`)
+
+**Execute if** `remove_bundle` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_bundle.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Phase 2
+
+### Step 7c: remove-from-okc (step key: `remove_okc`)
+
+**Execute if** `remove_okc` is in `UNBLOCKED_STEPS`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_okc.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Step 7d: remove-pull-pipelines (step key: `remove_pull_pipelines`, RHOAI only)
+
+**Execute if** `remove_pull_pipelines` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_pull_pipelines.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: already removed. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
+
+### Phase 3
+
+### Step 7e: remove-from-krd (step key: `remove_krd`)
 
 **Execute if** `remove_krd` is in `UNBLOCKED_STEPS`.
 
@@ -244,7 +299,7 @@ EXIT_CODE=$?
 - Exit 2: already removed. Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 7a2: remove-krd-rpa (step key: `remove_krd_rpa`, RHOAI only)
+### Step 7f: remove-krd-rpa (step key: `remove_krd_rpa`, RHOAI only)
 
 **Execute if** `remove_krd_rpa` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
@@ -260,59 +315,9 @@ EXIT_CODE=$?
 - Exit 2: already removed or ODH (skipped). Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 7b: remove-from-okc (step key: `remove_okc`)
+### Phase 4 (guarded)
 
-**Execute if** `remove_okc` is in `UNBLOCKED_STEPS`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_okc.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7c: remove-pull-pipelines (step key: `remove_pull_pipelines`, RHOAI only)
-
-**Execute if** `remove_pull_pipelines` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_pull_pipelines.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7d: remove-from-bundle (step key: `remove_bundle`)
-
-**Execute if** `remove_bundle` is in `UNBLOCKED_STEPS`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_bundle.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7e: remove-from-operator (step key: `remove_operator`)
-
-**Execute if** `remove_operator` is in `UNBLOCKED_STEPS`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_from_operator.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: skipped (is_operator=false) or already removed. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7f: remove-product-listing (step key: `remove_product_listing`, RHOAI only)
+### Step 7g: remove-product-listing (step key: `remove_product_listing`, RHOAI guarded)
 
 **Execute if** `remove_product_listing` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
@@ -325,62 +330,6 @@ EXIT_CODE=$?
 
 - Exit 0: MR raised. Set `NEW_PRS_RAISED="true"`.
 - Exit 2: already removed. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7g: remove-auto-merge (step key: `remove_auto_merge`, RHOAI guarded)
-
-**Execute if** `remove_auto_merge` is in `UNBLOCKED_STEPS`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_auto_merge.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed or skipped. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7h: remove-renovate (step key: `remove_renovate`, RHOAI guarded)
-
-**Execute if** `remove_renovate` is in `UNBLOCKED_STEPS`.
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_renovate.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: PR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed or skipped. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7i: remove-delivery-repo (step key: `remove_delivery_repo`, RHOAI guarded)
-
-**Execute if** `remove_delivery_repo` is in `UNBLOCKED_STEPS`.
-
-> **VPN must be active.**
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_delivery_repo.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: MR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed or skipped. Nothing further needed.
-- Exit 1: hard failure. Print `$OUTPUT` and stop.
-
-### Step 7j: remove-quay (step key: `remove_quay`, guarded)
-
-**Execute if** `remove_quay` is in `UNBLOCKED_STEPS`.
-
-> **VPN must be active.**
-
-```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_remove_quay.sh" --jira-url "$JIRA_URL")
-EXIT_CODE=$?
-```
-
-- Exit 0: MR raised. Set `NEW_PRS_RAISED="true"`.
-- Exit 2: already removed or skipped. Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 **CRITICAL — Exit 1 handling:** On exit 1, print the output, post a Jira comment, and
@@ -470,8 +419,6 @@ bash "$SCRIPTS_DIR/raise_jira_review.sh" \
 Phase 1 (parallel):
   remove_operator       : <status> — <pr_url or "skipped">
   remove_bundle         : <status> — <pr_url or "not yet raised">
-  remove_auto_merge     : <status or "skipped (guarded)">
-  remove_renovate       : <status or "skipped (guarded)">
 
 Phase 2 (after operator+bundle):
   remove_okc            : <status> — <pr_url or "not yet raised">
@@ -481,10 +428,12 @@ Phase 3 (after okc+pull_pipelines):
   remove_krd            : <status> — <mr_url or "not yet raised">
   remove_krd_rpa        : <status or "N/A (ODH)"> — <mr_url or "not yet raised">
 
-Phase 4 (guarded):
-  remove_product_listing: <status or "skipped (guarded)">
-  remove_delivery_repo  : <status or "skipped (guarded)">
-  remove_quay           : <status or "skipped (guarded)">
+Phase 4 (guarded — skipped by default):
+  remove_product_listing: <status or "skipped">
+  remove_auto_merge     : skipped (not yet implemented)
+  remove_renovate       : skipped (not yet implemented)
+  remove_delivery_repo  : skipped (not yet implemented)
+  remove_quay           : skipped (not yet implemented)
 
 Newly merged this run : <NEWLY_MERGED or "none">
 State file            : $PIPELINE_STATE
@@ -502,16 +451,12 @@ Re-run this skill after PRs/MRs are merged to advance the pipeline.
 | Tool not installed | 1 | Install per Step 1 guidance |
 | YAML not attached to Jira | 3 | Run `/create-component-offboarding-jira <jira-url>` first |
 | YAML fails schema validation | 3 | Fix YAML, re-upload to Jira, re-run |
-| VPN not active | 7a, 7a2, 7f, 7i, 7j | Activate Red Hat VPN; re-run (idempotent) |
-| KRD PDS MR fails | 7a | Check VPN; GITLAB_TOKEN needs write_repository scope |
-| KRD RPA MR fails | 7a2 | Check VPN; GITLAB_TOKEN needs write_repository scope |
-| OKC/RKC PR fails | 7b | Verify GITHUB_TOKEN repo scope and push access |
-| Pull pipelines PR fails | 7c | Check GITHUB_TOKEN push access to component repo |
-| Bundle PR fails | 7d | Verify GITHUB_TOKEN push access to build-config repo |
-| Operator PR fails | 7e | Verify GITHUB_TOKEN push access to operator repo |
-| Product listing MR fails | 7f | Check VPN; GITLAB_TOKEN needs write_repository scope |
-| Auto-merge PR fails | 7g | Verify GITHUB_TOKEN push access to auto-merge config repo |
-| Renovate PR fails | 7h | Verify GITHUB_TOKEN push access to renovate config repo |
-| Delivery repo MR fails | 7i | Check VPN; GITLAB_TOKEN needs write_repository scope |
-| Quay repo MR fails | 7j | Check VPN; GITLAB_TOKEN needs write_repository scope |
+| VPN not active | 7e, 7f, 7g | Activate Red Hat VPN; re-run (idempotent) |
+| Operator PR fails | 7a | Verify GITHUB_TOKEN push access to operator repo |
+| Bundle PR fails | 7b | Verify GITHUB_TOKEN push access to build-config repo |
+| OKC/RKC PR fails | 7c | Verify GITHUB_TOKEN repo scope and push access |
+| Pull pipelines PR fails | 7d | Check GITHUB_TOKEN push access to component repo |
+| KRD PDS MR fails | 7e | Check VPN; GITLAB_TOKEN needs write_repository scope |
+| KRD RPA MR fails | 7f | Check VPN; GITLAB_TOKEN needs write_repository scope |
+| Product listing MR fails | 7g | Check VPN; GITLAB_TOKEN needs write_repository scope |
 | State lost / fresh checkout | Any | Re-run; pipeline state rebuilt from Jira labels |

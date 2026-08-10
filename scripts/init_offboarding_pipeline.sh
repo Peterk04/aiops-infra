@@ -69,11 +69,6 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
     GUARDED_RHOAI_STATUS="pending"
   fi
 
-  GUARDED_RHOAI_ONLY_STATUS="skipped"
-  if [[ "$COMPONENT_EXISTS_IN_OLDER_VERSIONS" == "false" && "$PRODUCT_CONTEXT" != "ODH" ]]; then
-    GUARDED_RHOAI_ONLY_STATUS="pending"
-  fi
-
   cat > "$PIPELINE_STATE" <<EOF
 {
   "pipeline_type": "offboarding",
@@ -102,14 +97,14 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
       "label_done": "offboard-bundle-pr-merged"
     },
     "remove_auto_merge": {
-      "status": "${GUARDED_RHOAI_ONLY_STATUS}",
+      "status": "${GUARDED_RHOAI_STATUS}",
       "pr_url": "",
       "depends_on": [],
       "label_raised": "offboard-auto-merge-pr-raised",
       "label_done": "offboard-auto-merge-pr-merged"
     },
     "remove_renovate": {
-      "status": "${GUARDED_RHOAI_ONLY_STATUS}",
+      "status": "${GUARDED_RHOAI_STATUS}",
       "pr_url": "",
       "depends_on": [],
       "label_raised": "offboard-renovate-pr-raised",
